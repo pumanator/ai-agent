@@ -1,8 +1,12 @@
 import argparse
 import os
+import sys
 
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from functions.call_function import available_functions, call_function
+from prompts.prompts import system_prompt
 
 
 def main() -> None:
@@ -22,20 +26,44 @@ def main() -> None:
                         help="Enable verbose output")
 
     args = parser.parse_args()
-    # Now we can access `args.user_prompt`
-    messages = [{"role": "user", "content": args.user_prompt}]
-    response = client.chat.completions.create(
-        model="openrouter/free",
-        messages=messages,
-    )
-    if not response.usage:
-        raise RuntimeError("API response appears to be malformed")
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": args.user_prompt}
+    ]
+
     if args.verbose:
         print(f"User prompt: {args.user_prompt}")
-        print(f"Prompt tokens: {response.usage.prompt_tokens}")
-        print(f"Response tokens: {response.usage.completion_tokens}")
-    print("Response:")
-    print(response.choices[0].message.content)
+
+    for _ in range(20):
+        response = client.chat.completions.create(
+            model="openrouter/free",
+            messages=messages,
+            tools=available_functions,  # type: ignore
+        )
+        if not response.usage:
+            raise RuntimeError("API response appears to be malformed")
+        if args.verbose:
+            print(f"Prompt tokens: {response.usage.prompt_tokens}")
+            print(f"Response tokens: {response.usage.completion_tokens}")
+
+        message = response.choices[0].message
+        messages.append(message)
+
+        if message.tool_calls:
+            for tool_call in message.tool_calls:
+                result_message = call_function(tool_call, verbose=args.verbose)
+                if not result_message or not result_message.get("content"):
+                    raise Exception(f"Function call returned empty content: {result_message}")
+                if args.verbose:
+                    print(f"-> {result_message['content']}")
+                messages.append(result_message)
+        else:
+            print("Response:")
+            print(message.content)
+            return
+
+    print("Maximum iterations reached without a final response.")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
